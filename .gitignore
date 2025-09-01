@@ -1,0 +1,16 @@
+# Python
+rag_env/
+__pycache__/
+*.pyc
+
+# Node.js
+node_modules/
+
+# Data
+data/
+data11111/
+
+# Storage
+backend/storage/chroma_db/
+backend/storage/processed/
+backend/storage/raw/

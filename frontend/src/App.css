@@ -1,0 +1,41 @@
+body {
+  background-color: #f8f9fa;
+}
+
+.App {
+  padding: 2rem;
+}
+
+.title {
+  text-align: center;
+  margin-bottom: 2rem;
+  color: #343a40;
+}
+
+.search-container {
+  max-width: 800px;
+  margin: auto;
+}
+
+.results-container {
+  margin-top: 2rem;
+}
+
+.error-alert {
+  margin-top: 1rem;
+}
+
+.source-card {
+  margin-bottom: 1rem;
+  border-left: 4px solid #0d6efd;
+}
+
+.source-card .card-body {
+  font-size: 0.9rem;
+  background-color: #fdfdff;
+}
+
+.spinner-container {
+  text-align: center;
+  margin-top: 3rem;
+}

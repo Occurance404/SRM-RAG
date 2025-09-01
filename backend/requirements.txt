@@ -1,0 +1,8 @@
+requests
+beautifulsoup4
+lxml
+nltk
+chromadb
+sentence-transformers
+fastapi[all]
+google-generativeai
