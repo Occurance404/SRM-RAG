@@ -112,6 +112,15 @@ def fetch_page(url, user_agent):
         logging.error(f"  -> Failed to fetch {url}: {e}")
         return None
 
+def extract_headings(soup):
+    headings = []
+    for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+        level = int(h.name[1])
+        text = h.get_text(strip=True)
+        if text:
+            headings.append({"level": level, "text": text})
+    return headings
+
 def parse_page(soup, url):
     content_container = soup.find('main') or soup.find('article') or soup.body
     if not content_container:
@@ -125,6 +134,7 @@ def parse_page(soup, url):
         "title": soup.title.string.strip() if soup.title else "",
         "clean_text": content_container.get_text(separator='\n', strip=True),
         "images": extract_images(content_container, url),
+        "headings": extract_headings(content_container),
         "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
