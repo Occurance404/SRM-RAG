@@ -7,9 +7,19 @@ from collections import deque
 from urllib.parse import urljoin, urlparse
 import os
 from pathlib import Path
+from urllib.robotparser import RobotFileParser
+import logging
 
 import requests
 from bs4 import BeautifulSoup, NavigableString
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("crawler.log"),
+                        logging.StreamHandler()
+                    ])
 
 # Helper to filter out common boilerplate tags
 def is_boilerplate(tag):
@@ -31,6 +41,21 @@ def extract_images(soup, base_url):
     images = []
     for img in soup.select('main img, article img'): # Focus on content areas
         src = img.get('src') or img.get('data-src')
+
+        # Handle srcset
+        srcset = img.get('srcset')
+        if srcset:
+            # A simple approach: take the first URL from srcset
+            # A more advanced approach would parse the srcset and choose the best quality
+            src = srcset.split(',')[0].strip().split(' ')[0]
+
+        # Handle picture elements
+        if img.parent.name == 'picture':
+            for source in img.parent.find_all('source'):
+                if source.get('srcset'):
+                    src = source.get('srcset').split(',')[0].strip().split(' ')[0]
+                    break
+
         if not src:
             continue
 
@@ -43,23 +68,82 @@ def extract_images(soup, base_url):
         header_lineage.reverse()
 
         # Context snippet from surrounding text
-        context_snippet = ""
+        context_before = ""
+        for sibling in img.parent.find_previous_siblings(limit=2):
+            if not isinstance(sibling, NavigableString):
+                context_before = sibling.get_text(strip=True, separator=" ")[:256] + " " + context_before
+        
+        context_after = ""
         for sibling in img.parent.find_next_siblings(limit=2):
             if not isinstance(sibling, NavigableString):
-                context_snippet += sibling.get_text(strip=True, separator=" ")[:256]
-        if not context_snippet:
-             for sibling in img.parent.find_previous_siblings(limit=2):
-                if not isinstance(sibling, NavigableString):
-                    context_snippet += sibling.get_text(strip=True, separator=" ")[:256]
+                context_after += " " + sibling.get_text(strip=True, separator=" ")[:256]
 
+        context_snippet = (context_before + context_after).strip()
 
         images.append({
             "url": src,
             "alt": alt,
             "header_lineage": header_lineage,
-            "context_snippet": context_snippet.strip(),
+            "context_snippet": context_snippet,
         })
     return images
+
+def get_robot_parser(start_url):
+    parsed_uri = urlparse(start_url)
+    robots_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}/robots.txt"
+    rp = RobotFileParser()
+    rp.set_url(robots_url)
+    try:
+        rp.read()
+        return rp
+    except Exception as e:
+        logging.error(f"Error reading robots.txt: {e}")
+        return None
+
+def fetch_page(url, user_agent):
+    try:
+        response = requests.get(url, timeout=10, headers={'User-Agent': user_agent})
+        response.raise_for_status()
+        if 'text/html' not in response.headers.get('content-type', ''):
+            logging.info(f"  -> Skipping non-HTML content at {url}")
+            return None
+        return response
+    except requests.RequestException as e:
+        logging.error(f"  -> Failed to fetch {url}: {e}")
+        return None
+
+def parse_page(soup, url):
+    content_container = soup.find('main') or soup.find('article') or soup.body
+    if not content_container:
+        return None
+
+    for tag in content_container.find_all(is_boilerplate):
+        tag.decompose()
+
+    return {
+        "url": url,
+        "title": soup.title.string.strip() if soup.title else "",
+        "clean_text": content_container.get_text(separator='\n', strip=True),
+        "images": extract_images(content_container, url),
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+def discover_links(soup, base_url, domain, same_domain, include, exclude):
+    links = []
+    for a in soup.find_all('a', href=True):
+        link = a['href']
+        abs_link = urljoin(base_url, link)
+        parsed_link = urlparse(abs_link)
+
+        if (
+            parsed_link.scheme in ['http', 'https'] and
+            (not same_domain or parsed_link.netloc == domain) and
+            (not include or re.search(include, abs_link))
+            and
+            (not exclude or not re.search(exclude, abs_link))
+        ):
+            links.append(normalize_url(abs_link))
+    return links
 
 def crawl(start_url, out_dir, max_pages, same_domain, include, exclude, delay):
     """
@@ -75,6 +159,8 @@ def crawl(start_url, out_dir, max_pages, same_domain, include, exclude, delay):
     output_path.mkdir(parents=True, exist_ok=True)
     out_file = output_path / f"{domain}.jsonl"
 
+    robot_parser = get_robot_parser(start_url)
+    user_agent = 'UniversityRAGCrawler/1.0'
 
     q = deque([start_url])
     seen_pages = {start_url}
@@ -83,66 +169,36 @@ def crawl(start_url, out_dir, max_pages, same_domain, include, exclude, delay):
     with open(out_file, 'w') as f:
         while q and pages_crawled < max_pages:
             url = q.popleft()
-            print(f"[{pages_crawled + 1}/{max_pages}] Crawling: {url}")
-
-            try:
-                response = requests.get(url, timeout=10, headers={'User-Agent': 'UniversityRAGCrawler/1.0'})
-                response.raise_for_status()
-            except requests.RequestException as e:
-                print(f"  -> Failed to fetch {url}: {e}")
+            
+            if robot_parser and not robot_parser.can_fetch(user_agent, url):
+                logging.info(f"Skipping {url} due to robots.txt")
                 continue
 
-            # Basic content type check
-            if 'text/html' not in response.headers.get('content-type', ''):
-                print(f"  -> Skipping non-HTML content at {url}")
+            logging.info(f"[{pages_crawled + 1}/{max_pages}] Crawling: {url}")
+
+            response = fetch_page(url, user_agent)
+            if not response:
                 continue
 
             soup = BeautifulSoup(response.text, 'lxml')
+            page_data = parse_page(soup, url)
 
-            # Find main content area
-            content_container = soup.find('main') or soup.find('article') or soup.body
-            if not content_container:
-                print(f"  -> No content container found at {url}")
-                continue
+            if page_data:
+                f.write(json.dumps(page_data) + '\n')
+                pages_crawled += 1
 
-            # Remove boilerplate
-            for tag in content_container.find_all(is_boilerplate):
-                tag.decompose()
-
-            # Extract data
-            page_data = {
-                "url": url,
-                "title": soup.title.string.strip() if soup.title else "",
-                "clean_text": content_container.get_text(separator='\n', strip=True),
-                "images": extract_images(content_container, url),
-                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-
-            f.write(json.dumps(page_data) + '\n')
-            pages_crawled += 1
-
-            # Discover new links
-            for a in content_container.find_all('a', href=True):
-                link = a['href']
-                abs_link = urljoin(url, link)
-                parsed_link = urlparse(abs_link)
-
-                if (
-                    parsed_link.scheme in ['http', 'https'] and
-                    (not same_domain or parsed_link.netloc == domain) and
-                    (not include or re.search(include, abs_link))
-                    and
-                    (not exclude or not re.search(exclude, abs_link))
-                ):
-                    norm_link = normalize_url(abs_link)
-                    if norm_link not in seen_pages:
-                        q.append(norm_link)
-                        seen_pages.add(norm_link)
+                new_links = discover_links(soup, url, domain, same_domain, include, exclude)
+                for link in new_links:
+                    if link not in seen_pages:
+                        q.append(link)
+                        seen_pages.add(link)
 
             time.sleep(delay)
 
-    print(f"\nFinished crawling. Crawled {pages_crawled} pages.")
-    print(f"Output saved to: {out_file}")
+    logging.info(f"\nFinished crawling. Crawled {pages_crawled} pages.")
+    logging.info(f"Output saved to: {out_file}")
+
+
 
 
 if __name__ == "__main__":
