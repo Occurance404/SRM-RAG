@@ -1,10 +1,19 @@
+# Ignore files and directories that should not be in version control.
+
+# General
+.env
+*.log
+
 # Python
 rag_env/
 __pycache__/
 *.pyc
+*.egg-info
+.pytest_cache/
 
 # Node.js
-node_modules/
+frontend/node_modules/
+frontend/build/
 
 # Data
 data/
@@ -14,3 +23,7 @@ data11111/
 backend/storage/chroma_db/
 backend/storage/processed/
 backend/storage/raw/
+
+# IDE specific
+.vscode/
+.idea/
