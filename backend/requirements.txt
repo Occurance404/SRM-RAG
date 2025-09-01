@@ -6,3 +6,4 @@ chromadb
 sentence-transformers
 fastapi[all]
 google-generativeai
+spacy
